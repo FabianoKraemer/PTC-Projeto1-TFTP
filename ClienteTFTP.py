@@ -26,11 +26,12 @@ class  ClienteTFTP(poller.Callback):
         self.nomeArquivo = None # Nome do arquivo para baixar ou enviar     
         self.ToR = TouR # False pra transmitir, True pra receber, usado para testes de envio de texto
         #self.sched = poller.Poller
-        self.qntReloadTimeout = 0 # testes quantidade vezes refazer por timeout
+        self.qtde_timeout = 0 # testes quantidade vezes refazer por timeout
         self.sequencia = 0 # variável correspondente a MEF do professor pra sinalizar a sequência
         self.qtde_pacotes = 0 #variável correspondente a MEF do professor para verificar a quantidade de pacotes
         self.msg = None # Variável do dado/pacote que será enviado ou recebido     
         self.buffer_quadro_N = None # Armazena os dados do número do quadro correspondente
+        self.split_conteudo = None # Variavel pra armazenar num vetor os blocos de 512 bytes, testando
 
         self.enable_timeout()
 
@@ -39,7 +40,9 @@ class  ClienteTFTP(poller.Callback):
         with open(self.nomeArquivo, "rb") as file_object:
             conteudo = file_object.read() # Carrega o arquivo pra calcular o tamanho
         #print('conteudo: ', conteudo)
-        self.qtde_pacotes = int(1+(len(conteudo)/512)) # Calcula a quantidade de pacotes que serão transmitidos
+        self.qtde_pacotes = int(1+(len(conteudo)/512)) # Calcula a quantidade de pacotes que serão transmitidos       
+        # Testando
+        self.split_conteudo = [conteudo[i:i + 512] for i in range(0, len(conteudo), 512)] # Divide o conteudo do arquivo em partes de 512 bytes, adaptado de semestres anteriores
         self.msg = WRQ(caminho_arquivo).getQuadro() # Cria e retorna o quadro para ser enviado para o servidor
         print('Tamanho conteudo para transmitir: ', str(len(conteudo)))
         print('Quantidade de pacotes: ', self.qtde_pacotes)
@@ -66,7 +69,7 @@ class  ClienteTFTP(poller.Callback):
         sched.despache() # Entrega o controle para o Poller
 
     def handle(self):
-        if(self.testebind == False): 
+        if (self.testebind == False): 
                 #self.socket.bind(('', self.porta_padrao)) 
                 self.testebind = True          
         msg, addr = self.socket.recvfrom(1024)  
@@ -93,108 +96,102 @@ class  ClienteTFTP(poller.Callback):
     '''
     def handleTx0(self, dados):
         print('handle TX0')
-        ack = b'\x00\x04'
-        error = b'\x00\x05'
+        ack = b'\x00\x04' # Código do ACK da RFC
+        error = b'\x00\x05' # Código de erro da RFC
 
-        if (dados[:2] == ack and int.from_bytes(dados[2:4], "big") == 0):  #recebeu ack0. Obrigatório ser ack0, não pode ser outro ack
-            print("ACK_0 recebido: Conexão Estabelecida")
-            self.qntReloadTimeout = 0
-            self.buffer_quadro_N = Data(self.sequencia, self.split_conteudo.pop(0)).getPacote() #salva o pacote data numa variável para caso seja necessário reenviá-lo em caso de não receber ACK.
-            self.socket.sendto(self.buffer_quadro_N, (self.server_padrao, self.porta_recebida))
-            print("Enviado data " + str(self.sequencia))
-            if (self.qtde_pacotes == 1):
-                self.estado = self.Estados.Tx2 #tivemos que fazer esse "jump", pois o poller não chamará o Tx1 duas vezes para alterarmos o estado de Tx0->Tx1->Tx2
+        if (dados[:2] == ack and int.from_bytes(dados[2:4], "big") == 0): # Primeiro Ack recebido, precisa ser seq 0
+            self.qtde_timeout = 0
+            self.buffer_quadro_N = Data(self.sequencia, self.split_conteudo.pop(0)).getQuadro() # Retira o 1° bloco de 512 bytes do conteudo splitado            
+            if (self.qtde_pacotes > 1): # Vai para o Tx1 caso haja mais de 1 pacote
+                self.estado = self.Estados.Tx1 # Continua enviando enquanto tiver mais de 1 pacote
             else:
-                self.estado = self.Estados.Tx1
-
+                self.estado = self.Estados.Tx2 # Caso tenha só um pacote para transferir, vai para o estado Tx2
+            self.socket.sendto(self.buffer_quadro_N, (self.server_padrao, self.porta_recebida))
         elif (dados[:2] == error):
-            print("error")  #print para teste
+            print("Deu erro no Tx0, código do erro: ")  #print para teste
             print(dados[4:len(dados)-2].decode())  #print da mensagem de erro de acordo com a RFC do protocolo
-            self.estado = self.Estados.init
+            self.estado = self.Estados.init # Volta para o estado inicial
             self.disable()
             self.disable_timeout()
 
     def handleTx1(self, dados):
         print('handle TX1')
-        ack = b'\x00\x04'
+        ack = b'\x00\x04' # Código do ACK da RFC
+        error = b'\x00\x05' # Código de erro da RFC
 
-        if (dados[:2] == ack and int.from_bytes(dados[2:4], "big") == self.sequencia):
-            if (self.sequencia == self.qtde_pacotes-1): #verifica se deve mudar o estado ou não, de acordo com a quantidade de pacotes totais e quantos já foram enviados
-                self.estado = self.Estados.Tx2
-
-            print("Recebido o ACK " + str(int.from_bytes(dados[2:4], "big")))
-            self.qntReloadTimeout = 0
+        if (dados[:2] == ack and int.from_bytes(dados[2:4], "big") == self.sequencia): # Segundo Ack recebido, precisa ser seq 1
+            self.qtde_timeout = 0
             self.sequencia += 1
-            self.buffer_quadro_N = Data(self.sequencia, self.split_conteudo.pop(0)).getPacote() #salva o pacote data numa variável para caso seja necessário reenviá-lo em caso de não receber ACK.
+            self.buffer_quadro_N = Data(self.sequencia, self.split_conteudo.pop(0)).getQuadro() # Retira o bloco de 512 bytes do conteudo splitado          
             self.socket.sendto(self.buffer_quadro_N, (self.server_padrao, self.porta_recebida))
-            print("Enviado data " + str(self.sequencia))
+
+        elif (dados[:2] == error):
+            print("Deu erro no Tx1, código do erro: ")  #print para teste
+            print(dados[4:len(dados)-2].decode())  #print da mensagem de erro de acordo com a RFC do protocolo
+            self.estado = self.Estados.init # Volta para o estado inicial
+            self.disable()
+            self.disable_timeout()
 
     def handleTx2(self, dados):
         print('handle TX2')
-        ack = b'\x00\x04'
+        ack = b'\x00\x04' # Código do ACK da RFC
+        error = b'\x00\x05' # Código de erro da RFC
 
-        if (dados[:2] == ack and int.from_bytes(dados[2:4], "big") == self.sequencia):  #recebeu ack_N. Obrigatório ser ack_N, não pode ser outro ack
-            print("Recebido ACK " + str(self.getNfromMsg(dados)) + ". Arquivo enviado com sucesso.")
-            self.qntReloadTimeout = 0
+        if (dados[:2] == ack and int.from_bytes(dados[2:4], "big") == self.sequencia):  # # Segundo Ack recebido, precisa ser igual a self.sequencia
+            self.qtde_timeout = 0
             self.estado = self.Estados.init
+            self.disable()
+            self.disable_timeout()
+        elif (dados[:2] == error):
+            print("Deu erro no Tx2, código do erro: ")  # print para teste
+            print(dados[4:len(dados)-2].decode())  # print da mensagem de erro de acordo com a RFC do protocolo
+            self.estado = self.Estados.init # Volta para o estado inicial
             self.disable()
             self.disable_timeout()
 
     def handleRx0(self, dados):
         print('handle RX0')  
-        data = b'\x00\x03'
-        error = b'\x00\x05'
+        data = b'\x00\x03' # Código de data da RFC
+        error = b'\x00\x05' # Código de erro da RFC
 
-        if (dados[:2] == data and int.from_bytes(dados[2:4], "big") == self.sequencia): #recebeu data
-            print("DATA recebido: " + str(int.from_bytes(dados[2:4], "big")))
-            print("Informação útil: " + str(dados[4:len(dados) + 1]))
-            print("Tamanho da mensagem recebida: " + str(len(dados)))
-            self.socket.sendto(Ack(self.sequencia).getPacote(), (self.server_padrao, self.porta_recebida))
-            self.sequencia += 1
+        if (dados[:2] == data and int.from_bytes(dados[2:4], "big") == self.sequencia): # Recebendo dado e conferindo com a sequência equivalente          
             self.buffer += dados[4:len(dados) + 1] #adiciona o conteudo util do data recebido ao buffer
-            self.qntReloadTimeout = 0
+            self.qtde_timeout = 0
+            self.sequencia += 1
+            self.socket.sendto(Ack(self.sequencia).getQuadro(), (self.server_padrao, self.porta_recebida))
 
-            if (len(dados) < 516):
-                self.estado = self.Estados.Rx2  # info menor do que 512 bytes, então vai direto pro Rx2
-                #Precisa iniciar o GuardTimer aqui
-            else:
-                self.estado = self.Estados.Rx1  # info igual a 512 bytes, então vai pro Rx1
-
+            if (len(dados) < 512): # Se for menor que 512, é o ultimo quadro
+                self.estado = self.Estados.Rx2 
+            else: #(len(dados) == 512):
+                self.estado = self.Estados.Rx1  # Há mais dados para transmitir, vai pro Rx1
         elif (dados[:2] == error):
-            print("error")  #print para teste
-            print(dados[4:len(dados)-2].decode())  #print da mensagem de erro de acordo com a RFC do protocolo
-            self.estado = self.Estados.init
+            print("Erro no Rx0, código: ")
+            print(dados[4:len(dados)-2].decode()) # Imprime o código do erro
+            self.estado = self.Estados.init # Volta para o estado inicial
             self.disable()
             self.disable_timeout()
 
     def handleRx1(self, dados):
         print('handle RX1')   
-        data = b'\x00\x03'
-        error = b'\x00\x05'
+        data = b'\x00\x03' # Código de data da RFC
+        error = b'\x00\x05' # Código de erro da RFC
 
-        if (dados[:2] == data):  # recebeu data
-            if(int.from_bytes(dados[2:4], "big") == self.sequencia): # confere se é o data da sequencia certa
-                print("DATA recebido: " + str(int.from_bytes(dados[2:4], "big")))
-                print("Informação útil: " + str(dados[4:len(dados) + 1]))
-                print("Tamanho da mensagem recebida: " + str(len(dados)))
-                self.socket.sendto(Ack(self.sequencia).getPacote(), (self.server_padrao, self.porta_recebida))
-                self.buffer += dados[4:len(dados) + 1] #adiciona o conteudo util do data recebido ao buffer
-                self.qntReloadTimeout = 0
-
-                if (len(dados) < 516):
-                    #print("Teste: Arquivo recebido com sucesso!")
-                    self.estado = self.Estados.Rx2  # info menor do que 512 bytes, então vai direto pro Rx2
+        if (dados[:2] == data):  # Dado recebido
+            if(int.from_bytes(dados[2:4], "big") == self.sequencia): # # Recebendo dado e conferindo com a sequência equivalente
+                self.socket.sendto(Ack(self.sequencia).getQuadro(), (self.server_padrao, self.porta_recebida)) # Envia Ack de recebimento
+                self.qtde_timeout = 0
+                self.buffer += dados[4:len(dados) + 1] # Adiciona o novo quadro aos anteriores          
+                if (len(dados) < 512):
+                    self.estado = self.Estados.Rx2  # Se for menor que 512, é o ultimo quadro
                 else:
-                    self.sequencia += 1 #Feito assim, pois o N só incrementa quando não é último pacote
-
+                    self.sequencia += 1 # Tem mais pacotes
             else:
-                print("Recebido DATA da sequência errada")
-                self.socket.sendto(Ack(self.sequencia-1).getPacote(), (self.server_padrao, self.porta_recebida)) #reenvia ack anterior
-                self.qntReloadTimeout = 0
-
+                # Sequencia dos dados errada, reenvia ack atual
+                self.socket.sendto(Ack(self.sequencia-1).getQuadro(), (self.server_padrao, self.porta_recebida)) # Reenvia Ack
+                self.qtde_timeout = 0
         elif (dados[:2] == error):
-            print("error")  # print para teste
-            print(dados[4:len(dados) - 2].decode())  # print da mensagem de erro de acordo com a RFC do protocolo
+            dados_recebidos = dados[4:len(dados) - 2].decode()
+            print("Erro no RX1, codigo: ", dados_recebidos)  # Mensagem de erro
             self.estado = self.Estados.init
             self.disable()
             self.disable_timeout()
@@ -204,13 +201,15 @@ class  ClienteTFTP(poller.Callback):
         data = b'\x00\x03' # Código de data da RFC
         error = b'\x00\x05' # Código de erro da RFC
 
-        if (dados[:2] == data): # recebeu data
-            if(int.from_bytes(dados[2:4], "big") == self.sequencia): # confere se é o data da sequencia certa
-                self.socket.sendto(Ack(self.sequencia).getPacote(), (self.server_padrao, self.porta_recebida)) # Enviando o ack correspondente
-
+        if (dados[:2] == data): # Recebeu dado final
+            if(int.from_bytes(dados[2:4], "big") == self.sequencia): # Recebendo dado e conferindo com a sequência equivalente
+                self.socket.sendto(Ack(self.sequencia).getQuadro(), (self.server_padrao, self.porta_recebida)) # Enviando o ack correspondente
+                self.estado = self.Estados.init # Voltando ao estado ocioso
+                self.disable()
+                self.disable_timeout()
         elif (dados[:2] == error): # Erro
             dados_recebidos = dados[4:len(dados) - 2].decode()
-            print("Msg erro: ", dados_recebidos)  # print da mensagem de erro de acordo com a RFC do protocolo
+            print("Erro no Rx2, codigo: ", dados_recebidos)  # Mensagem de erro
             self.estado = self.Estados.init # Voltando ao estado ocioso
             self.disable()
             self.disable_timeout()
@@ -230,25 +229,25 @@ class  ClienteTFTP(poller.Callback):
 
     def handle_timeout(self): 
 
-        self.qntReloadTimeout += 1
+        self.qtde_timeout += 1
         
         # Volta ao estado ocioso
         if (self.estado == self.Estados.Rx0 or self.estado == self.Estados.Rx1 or self.estado == self.Estados.Tx0):            
-            if (self.qntReloadTimeout > 5): 
+            if (self.qtde_timeout > 5): 
                 self.buffer.clear()
-                self.qntReloadTimeout = 0
+                self.qtde_timeout = 0
                 self.estado = self.Estados.init
                 self.disable()
                 self.disable_timeout()
 
         # Caso der timeout sem enviar pela primeira vez, tenta novamente 5 vezes
         elif (self.estado == self.Estados.Tx1 or self.estado == self.Estados.Tx2):
-            if (self.qntReloadTimeout < 5): #verifica se encerra o cliente ou tenta de novo
+            if (self.qtde_timeout < 5): #verifica se encerra o cliente ou tenta de novo
                 self.socket.sendto(self.buffer, (self.server_padrao, self.porta_recebida))
                 print("Tentando reenvio no timeout pela tentativa ", self.sequencia)
             else:
                 print("Perda de comunicação com servidor. Encerrando o envio.")
-                self.qntReloadTimeout = 0
+                self.qtde_timeout = 0
                 self.estado = self.Estados.init
                 self.disable()
                 self.disable_timeout()

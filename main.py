@@ -1,8 +1,6 @@
 import poller
 import sys
 from ClienteTFTP import *
-from Aplicacao import Aplicacao
-
 
 Timeout = 3  # 10 segundos
 address = '127.0.0.1'
