@@ -29,10 +29,8 @@ class  ClienteTFTP(poller.Callback):
         self.qntReloadTimeout = 0 # testes quantidade vezes refazer por timeout
         self.sequencia = 0 # variável correspondente a MEF do professor pra sinalizar a sequência
         self.qtde_pacotes = 0 #variável correspondente a MEF do professor para verificar a quantidade de pacotes
-
-        self.msg = None #armazena a mensagem recebida ou a ser enviada
-        
-        self.pacote_DATA_N = None #será usado para evitar "pop" no conteudo em momentos de timeout
+        self.msg = None # Variável do dado/pacote que será enviado ou recebido     
+        self.buffer_quadro_N = None # Armazena os dados do número do quadro correspondente
 
         self.enable_timeout()
 
@@ -42,34 +40,30 @@ class  ClienteTFTP(poller.Callback):
             conteudo = file_object.read() # Carrega o arquivo pra calcular o tamanho
         #print('conteudo: ', conteudo)
         self.qtde_pacotes = int(1+(len(conteudo)/512)) # Calcula a quantidade de pacotes que serão transmitidos
-
-        self.split_conteudo = [conteudo[i:i + 512] for i in range(0, len(conteudo), 512)]  #divide o conteudo de 512 em 512 bytes
-
         self.msg = WRQ(caminho_arquivo).getQuadro() # Cria e retorna o quadro para ser enviado para o servidor
+        print('Tamanho conteudo para transmitir: ', str(len(conteudo)))
+        print('Quantidade de pacotes: ', self.qtde_pacotes)
         print('Mensagem enviada: ', self.msg)
         self.socket.sendto(self.msg, (self.server_padrao, self.porta_recebida)) # Envia o WRQ
-        self.estado = self.Estados.Tx0 #aguarda conexão
-        self.sequencia = 1
-        
-        print("Tamanho conteúdo a ser transmitido: " + str(len(conteudo)))
-        print("Quantidade de pacotes a serem transmitidos: " + str(self.qtde_pacotes))
+        self.estado = self.Estados.Tx0 # Ativa o estado Tx0 na MEF
+        self.sequencia = 1     
         self.enable()
         self.enable_timeout()
-        sched = poller.Poller() # cria o Poller
-        sched.adiciona(self) # registra os callbacks
-        sched.despache() # entrega o controle ao Poller
+        sched = poller.Poller() # Cria o objeto do poller
+        sched.adiciona(self) # Se registra no Callback do Poller
+        sched.despache() # Entrega o controle para o Poller
 
     def recebe(self, end_arquivo): 
-        self.nomeArquivo = end_arquivo #arquivo que será baixado
-        self.msg = RRQ(end_arquivo).getPacote()
-        self.socket.sendto(self.msg, (self.server_padrao, self.porta_padrao)) #envia o RRQ com nome do arquivo
-        self.estado = self.Estados.Rx0 #aguarda conexão
+        self.nomeArquivo = end_arquivo
+        self.msg = RRQ(end_arquivo).getQuadro()
         self.sequencia = 1
+        self.estado = self.Estados.Rx0 # Ativa o estado Rx0 na MEF       
+        self.socket.sendto(self.msg, (self.server_padrao, self.porta_padrao)) # Envia o RRQ com o nome do arquivo
         self.enable()
         self.enable_timeout()
-        sched = poller.Poller() # cria o Poller
-        sched.adiciona(self) # registra os callbacks
-        sched.despache() # entrega o controle ao Poller
+        sched = poller.Poller() # Cria o objeto do poller
+        sched.adiciona(self) # Se registra no Callback do Poller
+        sched.despache() # Entrega o controle para o Poller
 
     def handle(self):
         if(self.testebind == False): 
@@ -105,8 +99,8 @@ class  ClienteTFTP(poller.Callback):
         if (dados[:2] == ack and int.from_bytes(dados[2:4], "big") == 0):  #recebeu ack0. Obrigatório ser ack0, não pode ser outro ack
             print("ACK_0 recebido: Conexão Estabelecida")
             self.qntReloadTimeout = 0
-            self.pacote_DATA_N = Data(self.sequencia, self.split_conteudo.pop(0)).getPacote() #salva o pacote data numa variável para caso seja necessário reenviá-lo em caso de não receber ACK.
-            self.socket.sendto(self.pacote_DATA_N, (self.server_padrao, self.porta_recebida))
+            self.buffer_quadro_N = Data(self.sequencia, self.split_conteudo.pop(0)).getPacote() #salva o pacote data numa variável para caso seja necessário reenviá-lo em caso de não receber ACK.
+            self.socket.sendto(self.buffer_quadro_N, (self.server_padrao, self.porta_recebida))
             print("Enviado data " + str(self.sequencia))
             if (self.qtde_pacotes == 1):
                 self.estado = self.Estados.Tx2 #tivemos que fazer esse "jump", pois o poller não chamará o Tx1 duas vezes para alterarmos o estado de Tx0->Tx1->Tx2
@@ -131,8 +125,8 @@ class  ClienteTFTP(poller.Callback):
             print("Recebido o ACK " + str(int.from_bytes(dados[2:4], "big")))
             self.qntReloadTimeout = 0
             self.sequencia += 1
-            self.pacote_DATA_N = Data(self.sequencia, self.split_conteudo.pop(0)).getPacote() #salva o pacote data numa variável para caso seja necessário reenviá-lo em caso de não receber ACK.
-            self.socket.sendto(self.pacote_DATA_N, (self.server_padrao, self.porta_recebida))
+            self.buffer_quadro_N = Data(self.sequencia, self.split_conteudo.pop(0)).getPacote() #salva o pacote data numa variável para caso seja necessário reenviá-lo em caso de não receber ACK.
+            self.socket.sendto(self.buffer_quadro_N, (self.server_padrao, self.porta_recebida))
             print("Enviado data " + str(self.sequencia))
 
     def handleTx2(self, dados):
