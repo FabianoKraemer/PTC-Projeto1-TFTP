@@ -1,6 +1,6 @@
 # PTC-Projeto1-TFTP
 
-Link para o Git do projeto: [IFSC - PTC - Projeto 1](https://github.com/FabianoKraemer/PTC-Projeto1-TFTP)
+Link para o Git do projeto: [IFSC - PTC - Projeto 1](https://github.com/FabianoKraemer/PTC-Projeto1-TFTP/tree/master)
 
 ### Instruções de uso:
 
